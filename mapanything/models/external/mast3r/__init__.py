@@ -138,7 +138,7 @@ class MASt3RSGAWrapper(torch.nn.Module):
         # Get the predictions
         intrinsics = scene.intrinsics
         c2w_poses = scene.get_im_poses()
-        _, depths, _ = scene.get_dense_pts3d()
+        _, depths, confs = scene.get_dense_pts3d()  # confs: per-view (H, W) canonical confidences, cleaned
 
         # Convert the output to the MapAnything format
         with torch.autocast("cuda", enabled=False):
@@ -190,6 +190,7 @@ class MASt3RSGAWrapper(torch.nn.Module):
                         "depth_along_ray": curr_view_depth_along_ray,
                         "cam_trans": curr_view_cam_translations,
                         "cam_quats": curr_view_cam_quats,
+                        "conf": confs[view_idx].reshape((height, width)).unsqueeze(0),
                     }
                 )
 

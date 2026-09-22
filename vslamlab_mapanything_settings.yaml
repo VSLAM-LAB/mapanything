@@ -2,3 +2,6 @@
 ---
 cam_mono: rgb_0
 cam_rgbd: rgb_0
+# Folder holding the external modules' weights (VGGT model.pt, VGGT-Omega .pt, the NAVER .pth files); downloaded
+# there when missing. Empty: <TORCH_HOME>/hub/checkpoints, i.e. Baselines/torch_home/hub/checkpoints under pixi.
+checkpoint_dir:

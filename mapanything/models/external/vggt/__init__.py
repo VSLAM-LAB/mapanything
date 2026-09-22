@@ -32,12 +32,18 @@ class VGGTWrapper(torch.nn.Module):
         intermediate_layer_idx=[4, 11, 17, 23],
         load_custom_ckpt=False,
         custom_ckpt_path=None,
+        precision="autocast",
     ):
         super().__init__()
         self.name = name
         self.torch_hub_force_reload = torch_hub_force_reload
         self.load_custom_ckpt = load_custom_ckpt
         self.custom_ckpt_path = custom_ckpt_path
+        # VSLAM-LAB: "autocast" keeps fp32 weights with bf16/fp16 autocast on the aggregator (upstream behaviour);
+        # "bf16" casts the whole model to bfloat16 and runs it without autocast (about half the GPU memory, so
+        # roughly twice the frames per window, VGGT-SLAM 2.0 style)
+        assert precision in ("autocast", "bf16"), f"precision must be 'autocast' or 'bf16', got {precision!r}"
+        self.precision = precision
 
         if load_pretrained_weights:
             # Load pre-trained weights
@@ -75,9 +81,14 @@ class VGGTWrapper(torch.nn.Module):
             assert self.custom_ckpt_path is not None, (
                 "custom_ckpt_path must be provided if load_custom_ckpt is set to True"
             )
-            custom_ckpt = torch.load(self.custom_ckpt_path, weights_only=False)
+            # mmap: the 5 GB state dict stays file-backed instead of being copied into anonymous RAM next to the
+            # freshly built fp32 model (peak ~10 GB otherwise, which spills into swap on a busy 32 GB machine)
+            custom_ckpt = torch.load(self.custom_ckpt_path, weights_only=True, mmap=True, map_location="cpu")
             print(self.model.load_state_dict(custom_ckpt, strict=True))
             del custom_ckpt  # in case it occupies memory
+
+        if self.precision == "bf16":
+            self.model = self.model.to(torch.bfloat16)
 
     def forward(self, views):
         """
@@ -110,29 +121,46 @@ class VGGTWrapper(torch.nn.Module):
         img_list = [view["img"] for view in views]
         images = torch.stack(img_list, dim=1)
 
-        # Run the VGGT aggregator
-        with torch.autocast("cuda", dtype=self.dtype):
-            aggregated_tokens_list, ps_idx = self.model.aggregator(images)
+        if self.precision == "bf16":
+            # Whole model in bfloat16; autocast stays on for the heads too, so the fp32 tensors some ops produce
+            # (layer norm outputs, the DPT positional grid) are cast back to the bf16 weights' dtype
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                images = images.to(torch.bfloat16)
+                aggregated_tokens_list, ps_idx = self.model.aggregator(images)
+                pose_enc = self.model.camera_head(aggregated_tokens_list)[-1].float()
+                extrinsic, intrinsic = pose_encoding_to_extri_intri(
+                    pose_enc, images.shape[-2:]
+                )
+                depth_map, depth_conf = self.model.depth_head(
+                    aggregated_tokens_list, images, ps_idx
+                )
+            depth_map, depth_conf = depth_map.float(), depth_conf.float()
+            extrinsic, intrinsic = extrinsic.float(), intrinsic.float()
+        else:
+            # Run the VGGT aggregator
+            with torch.autocast("cuda", dtype=self.dtype):
+                aggregated_tokens_list, ps_idx = self.model.aggregator(images)
 
-        # Run the Camera + Pose Branch of VGGT
+            # Run the Camera + Pose Branch of VGGT
+            with torch.autocast("cuda", enabled=False):
+                # Predict Cameras
+                pose_enc = self.model.camera_head(aggregated_tokens_list)[-1]
+                # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
+                # Extrinsics Shape: (B, V, 3, 4)
+                # Intrinsics Shape: (B, V, 3, 3)
+                extrinsic, intrinsic = pose_encoding_to_extri_intri(
+                    pose_enc, images.shape[-2:]
+                )
+
+                # Predict Depth Maps
+                # Depth Shape: (B, V, H, W, 1)
+                # Depth Confidence Shape: (B, V, H, W)
+                depth_map, depth_conf = self.model.depth_head(
+                    aggregated_tokens_list, images, ps_idx
+                )
+
+        # Convert the output to MapAnything format (fp32 geometry)
         with torch.autocast("cuda", enabled=False):
-            # Predict Cameras
-            pose_enc = self.model.camera_head(aggregated_tokens_list)[-1]
-            # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
-            # Extrinsics Shape: (B, V, 3, 4)
-            # Intrinsics Shape: (B, V, 3, 3)
-            extrinsic, intrinsic = pose_encoding_to_extri_intri(
-                pose_enc, images.shape[-2:]
-            )
-
-            # Predict Depth Maps
-            # Depth Shape: (B, V, H, W, 1)
-            # Depth Confidence Shape: (B, V, H, W)
-            depth_map, depth_conf = self.model.depth_head(
-                aggregated_tokens_list, images, ps_idx
-            )
-
-            # Convert the output to MapAnything format
             res = []
             for view_idx in range(num_views):
                 # Get the extrinsics, intrinsics, depth map for the current view

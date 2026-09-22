@@ -810,6 +810,7 @@ class Pow3RBAWrapper(torch.nn.Module):
         intrinsics = scene.get_intrinsics()
         c2w_poses = scene.get_im_poses()
         depths = scene.get_depthmaps()
+        confs = scene.get_conf()  # per-view (H, W) aligned confidences
 
         # Convert the output to the MapAnything format
         with torch.autocast("cuda", enabled=False):
@@ -859,6 +860,7 @@ class Pow3RBAWrapper(torch.nn.Module):
                         "depth_along_ray": curr_view_depth_along_ray,
                         "cam_trans": curr_view_cam_translations,
                         "cam_quats": curr_view_cam_quats,
+                        "conf": confs[view_idx].unsqueeze(0),
                     }
                 )
 
