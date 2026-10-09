@@ -177,3 +177,7 @@ cython_debug/
 
 # VSLAM-LAB install log (BaselineVSLAMLAB.install)
 install_*.txt
+
+# pixi (VSLAM-LAB environment) and the asmk checkout built by `pixi run install`
+.pixi/
+third_party/asmk/

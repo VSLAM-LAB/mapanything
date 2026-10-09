@@ -1,0 +1,73 @@
+# VSLAM-LAB environment for MapAnything (not published as a conda package: pure Python, installed from this checkout).
+# `pixi run install` installs this repo in editable mode plus the external models of its model factory; VSLAM-LAB's
+# `mapanything` environment forwards fetch-source / install / execute-* here (cwd Baselines/MapAnything).
+#
+# uniception (PyPI only) and the external models are installed without their declared dependencies (torchaudio,
+# rerun, minio, a PyPI opencv pin, ... are not needed for inference and would clash with conda's PyTorch); what the
+# import chain uses is listed below. The external models are the pip extras of pyproject.toml, pinned to commits
+# (vggt, pi3 and moge are vendored in mapanything itself). asmk is MUSt3R's retrieval library: its committed
+# hamming.c predates Python 3.11, so it is cloned and its Cython source regenerated before the build.
+[workspace]
+authors = ["vslamlab <vslamlab@gmail.com>"]
+channels = ["https://prefix.dev/conda-forge"]
+name = "mapanything"
+platforms = [{ name = "linux-64-cuda129", platform = "linux-64", cuda = "12.9" }]
+version = "0.1.0"
+
+[tasks]
+fetch-asmk = "git clone -q https://github.com/jenicek/asmk.git third_party/asmk || git -C third_party/asmk fetch -q"
+install-asmk = { cmd = "git -C third_party/asmk checkout -q 2a96d9c03a841dffdfddabc699a20512dcd09363 && cython third_party/asmk/cython/hamming.pyx -o third_party/asmk/cython/hamming.c && pip install --no-deps --no-build-isolation third_party/asmk", depends-on = ["fetch-asmk"] }
+install = { cmd = '''pip install --no-deps uniception==0.1.7 && pip install --no-deps --no-build-isolation -e . && pip install --no-deps --no-build-isolation "vggt-omega @ git+https://github.com/facebookresearch/vggt-omega.git@a3ab0141f96838724423541044ff5ba301cfd36a" "pi3 @ git+https://github.com/yyfz/Pi3.git@9fa3ddb3f8d53041f8b2738df404f62223bbaa7b" "croco @ git+https://github.com/naver/croco.git@87244aa971caa4bae57ba7f9cb885761d323da93" "dust3r @ git+https://github.com/naver/dust3r.git@bb9f9f54826b4077ed9fd075308eb2fe2d4666f9" "mast3r @ git+https://github.com/Nik-V9/mast3r.git@6b9f16318a057d8f68ba110d4b638d3b74f69fee" "must3r @ git+https://github.com/naver/must3r.git@efc5b08fbbaba814706880932ba2497472096925" "pow3r @ git+https://github.com/Nik-V9/pow3r.git@8721c1b78816329cc8d87d929221e36ac9aba298"''', depends-on = ["install-asmk"] }
+# TORCH_HOME: the external modules' weights go to <VSLAM-LAB>/Baselines/torch_home/hub/checkpoints (this checkout is
+# Baselines/MapAnything), where VSLAM-LAB's download-vggt-weights puts the VGGT-1B model.pt shared with vggtslam; the
+# entry point downloads what is missing itself
+execute-mono = { cmd = "python vslamlab_mapanything.py", env = { TORCH_HOME = "$PIXI_PROJECT_ROOT/../torch_home" } }
+execute-rgbd = { cmd = "python vslamlab_mapanything.py", env = { TORCH_HOME = "$PIXI_PROJECT_ROOT/../torch_home" } }
+test = "python -I -c 'import mapanything.models, uniception, vggt_omega, pi3, croco, dust3r, mast3r, must3r, pow3r, asmk, roma; print(\"OK\")'"
+
+[dependencies]
+python = "3.11.*"
+pip = "*"
+setuptools = "*"
+cuda-version = "12.9.*"  # same PyTorch build as the other CUDA 12.9 baselines (shared pixi cache)
+
+# Torch (vggt-omega requires >= 2.6)
+pytorch-gpu = "2.7.*"
+torchvision = "*"
+numpy = "<2"
+
+# mapanything (pyproject deps that inference imports) + uniception runtime
+huggingface_hub = "*"
+safetensors = "*"
+hydra-core = "*"        # mapanything.models imports hydra at module level
+omegaconf = "*"
+natsort = "*"
+opencv = "*"
+pillow = "*"
+pillow-heif = "*"
+plyfile = "*"
+python-box = "*"
+requests = "*"
+trimesh = "*"
+tqdm = "*"
+einops = "*"
+jaxtyping = "*"
+timm = "*"
+termcolor = "*"
+matplotlib = "*"
+scikit-learn = "*"
+
+# external modules: dust3r family global alignment (roma, below), MUSt3R retrieval (faiss + asmk built with cython, pyaml)
+faiss = "*"
+pyaml = "*"
+cython = "*"
+
+# vslamlab_mapanything.py
+pandas = "*"
+pyyaml = "*"
+scipy = "*"
+viser = "=0.2.23"
+
+[pypi-dependencies]
+# roma (RoMa rotation utilities, naver) is PyPI only: dust3r.cloud_opt, mast3r sparse GA, must3r and pow3r import it
+roma = "*"
