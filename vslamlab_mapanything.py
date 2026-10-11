@@ -3,7 +3,7 @@ Module: MapAnything - VSLAM-LAB entry point (mono / rgbd)
 - Author: Alejandro Fontan Villacampa
 - Version: 2.0
 - Created: 2026-09-15
-- Updated: 2026-09-18
+- Updated: 2026-10-11
 - License: Apache-2.0 (MapAnything)
 
 One feed-forward pass over every frame of the experiment's rgb csv (the framework's rgb_max / rgb_step /
@@ -26,6 +26,7 @@ import os
 import time
 import webbrowser
 from pathlib import Path
+from urllib.error import HTTPError
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # upstream's recommendation
 
@@ -40,6 +41,32 @@ from torchvision import transforms  # noqa: E402
 
 from mapanything.models import MapAnything, model_factory  # noqa: E402
 from mapanything.utils.image import load_images, preprocess_inputs  # noqa: E402
+
+
+def use_hub_cache_on_github_server_errors() -> None:
+    """torch.hub.load('<owner>/<repo>') without a ref first opens github.com/<owner>/<repo>/tree/main/ to choose
+    main vs master, and raises on any HTTP error other than 404 before looking at its cache (uniception's DINOv2 load
+    died on a GitHub 504 although the repo was cached). On a 5xx, use the cached main/master like torch.hub does
+    offline; with nothing cached, the error is raised as before."""
+    parse_repo_info = torch.hub._parse_repo_info
+
+    def parse_with_cache_fallback(github):
+        try:
+            return parse_repo_info(github)
+        except HTTPError as e:
+            if e.code < 500:
+                raise
+            owner, name = github.split(":")[0].split("/")
+            for ref in ("main", "master"):
+                if os.path.exists(os.path.join(torch.hub.get_dir(), f"{owner}_{name}_{ref}")):
+                    print(f"torch.hub: github.com answered {e.code} for {owner}/{name}, using the cached '{ref}' copy")
+                    return owner, name, ref
+            raise
+
+    torch.hub._parse_repo_info = parse_with_cache_fallback
+
+
+use_hub_cache_on_github_server_errors()
 
 # --module -> (model_factory key, image normalisation the wrapper asserts, what comes out)
 MODULES = {
